@@ -1,0 +1,18 @@
+{
+  "name": "nodeindicators",
+  "version": "1.0.0",
+  "main": "indicators.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "description": "",
+  "dependencies": {
+    "express": "^4.21.2",
+    "puppeteer": "^24.4.0",
+    "technicalindicators": "^3.1.0"
+  }
+}

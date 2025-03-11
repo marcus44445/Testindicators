@@ -1,139 +1,118 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
-const { SMA, ADX, Stochastic, RSI, MACD } = require('technicalindicators');
+const cors = require('cors');
+const Indicators = require('technicalindicators');
 
 const app = express();
 const PORT = 3000;
 
-const BASE_URL = 'https://pocketoption.com/en/cabinet/demo-quick-high-low/';
+app.use(cors());
+app.use(express.json());
+
+// Indicator periods
 const SMA_PERIOD = 3;
 const ADX_PERIOD = 14;
-const RSI_PERIOD = 14;
+const RSI_PERIOD_14 = 14;
+const RSI_PERIOD_4 = 4;
 const MACD_FAST = 12;
 const MACD_SLOW = 26;
 const MACD_SIGNAL = 9;
 const STOCHASTIC_PERIOD = 14;
 const STOCHASTIC_SIGNAL = 3;
 
+// PSAR Settings
+const PSAR_STEP = 0.25; // Acceleration Factor Step
+const PSAR_MAX = 1; // Maximum Acceleration Factor
+
+// Store OHLC and indicator data
 let closePrices = [];
 let highPrices = [];
 let lowPrices = [];
+let latestOHLC = {};
 let indicatorValues = {};
 
-// Function to launch browser and navigate to PocketOption
-async function loadWebDriver() {
-    const browser = await puppeteer.launch({ headless: false }); // Set to true for headless mode
-    const page = await browser.newPage();
-    await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
-    console.log(`Navigated to ${BASE_URL}`);
-    return { browser, page };
-}
+// Store full history of SMA and PSAR
+let smaHistory = [];
+let psarHistory = [];
 
-// Function to process timestamps into OHLC format
-function processTimestampsToOHLC(timestamps) {
-    const ohlcData = new Map();
-
-    timestamps.forEach((timestamp) => {
-        let interval = new Date(timestamp);
-        interval.setSeconds(Math.floor(interval.getSeconds() / 5) * 5, 0);
-
-        const key = interval.getTime();
-        if (!ohlcData.has(key)) {
-            ohlcData.set(key, { open: timestamp, high: timestamp, low: timestamp, close: timestamp });
-        } else {
-            let ohlc = ohlcData.get(key);
-            ohlc.high = timestamp > ohlc.high ? timestamp : ohlc.high;
-            ohlc.low = timestamp < ohlc.low ? timestamp : ohlc.low;
-            ohlc.close = timestamp;
-        }
-    });
-
-    // Add new OHLC values to persistent arrays
-    ohlcData.forEach(ohlc => {
-        closePrices.push(ohlc.close.getTime());
-        highPrices.push(ohlc.high.getTime());
-        lowPrices.push(ohlc.low.getTime());
-    });
-
-    // Keep only the latest required values
-    const maxPeriod = Math.max(SMA_PERIOD, ADX_PERIOD, RSI_PERIOD, MACD_SLOW, STOCHASTIC_PERIOD);
-    if (closePrices.length > maxPeriod) {
-        closePrices = closePrices.slice(-maxPeriod);
-        highPrices = highPrices.slice(-maxPeriod);
-        lowPrices = lowPrices.slice(-maxPeriod);
-    }
-
-    // Calculate indicators when enough data is available
-    if (closePrices.length >= maxPeriod) {
-        const smaValues = SMA.calculate({ period: SMA_PERIOD, values: closePrices });
-        const adxValues = ADX.calculate({ period: ADX_PERIOD, close: closePrices, high: highPrices, low: lowPrices });
-        const rsiValues = RSI.calculate({ period: RSI_PERIOD, values: closePrices });
-        const macdValues = MACD.calculate({
-            values: closePrices,
-            fastPeriod: MACD_FAST,
-            slowPeriod: MACD_SLOW,
-            signalPeriod: MACD_SIGNAL,
-            SimpleMAOscillator: false,
-            SimpleMASignal: false
-        });
-        const stochasticValues = Stochastic.calculate({
-            period: STOCHASTIC_PERIOD,
-            low: lowPrices,
+// Function to calculate indicators
+function calculateIndicators() {
+    if (closePrices.length >= Math.max(SMA_PERIOD, ADX_PERIOD, RSI_PERIOD_14, MACD_SLOW, STOCHASTIC_PERIOD)) {
+        let smaValues = Indicators.SMA.calculate({ period: SMA_PERIOD, values: closePrices });
+        let psarValues = Indicators.PSAR.calculate({
             high: highPrices,
-            close: closePrices,
-            signalPeriod: STOCHASTIC_SIGNAL
+            low: lowPrices,
+            step: PSAR_STEP, 
+            max: PSAR_MAX
         });
 
-        // Store indicator values in global variable
+        // Save full history
+        smaHistory.push(smaValues.slice(-1)[0] || "N/A");
+        psarHistory.push(psarValues.slice(-1)[0] || "N/A");
+
+        // Keep only last 10 values to avoid memory overflow
+        if (smaHistory.length > 10) smaHistory.shift();
+        if (psarHistory.length > 10) psarHistory.shift();
+
+        // Store indicator values
         indicatorValues = {
-            SMA: smaValues,
-            ADX: adxValues.length ? adxValues[adxValues.length - 1] : "N/A",
-            RSI: rsiValues.length ? rsiValues[rsiValues.length - 1] : "N/A",
-            MACD: macdValues.length ? macdValues[macdValues.length - 1] : "N/A",
-            Stochastic: stochasticValues.length ? stochasticValues[stochasticValues.length - 1] : "N/A"
+            SMA: smaHistory.slice(-5), // Show last 5 values
+            PSAR: psarHistory.slice(-5), // Show last 5 values
+            ADX: Indicators.ADX.calculate({
+                high: highPrices,
+                low: lowPrices,
+                close: closePrices,
+                period: ADX_PERIOD
+            }).slice(-1)[0]?.adx || "N/A",
+            RSI_14: Indicators.RSI.calculate({ period: RSI_PERIOD_14, values: closePrices }).slice(-1)[0] || "N/A",
+            RSI_4: Indicators.RSI.calculate({ period: RSI_PERIOD_4, values: closePrices }).slice(-1)[0] || "N/A",
+            MACD: Indicators.MACD.calculate({ values: closePrices, fastPeriod: MACD_FAST, slowPeriod: MACD_SLOW, signalPeriod: MACD_SIGNAL }).slice(-1)[0] || "N/A",
+            Stochastic: Indicators.Stochastic.calculate({ 
+                high: highPrices, 
+                low: lowPrices, 
+                close: closePrices, 
+                period: STOCHASTIC_PERIOD, 
+                signalPeriod: STOCHASTIC_SIGNAL 
+            }).slice(-1)[0] || "N/A"
         };
-
-        console.log("\nIndicators:", indicatorValues);
-    } else {
-        console.log("\nWaiting for more data to calculate indicators...");
     }
 }
 
-// Function to stream timestamps and process them into OHLC
-async function streamTimestamps() {
-    const timestamps = [];
-    try {
-        while (true) {
-            const currentTime = new Date();
-            timestamps.push(currentTime);
+// Endpoint to receive OHLC data and update indicators
+app.post('/indicators', (req, res) => {
+    const { open, high, low, close, timestamp } = req.body;
 
-            if (timestamps.length > 0 && currentTime.getSeconds() % 5 === 0) {
-                processTimestampsToOHLC(timestamps);
-                timestamps.length = 0;
-            }
-
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Sleep 1 second
-        }
-    } catch (error) {
-        console.error("Streaming stopped:", error);
+    if (!open || !high || !low || !close || !timestamp) {
+        return res.status(400).json({ error: 'Missing OHLC data' });
     }
-}
 
-// Main execution
-(async () => {
-    try {
-        const { browser, page } = await loadWebDriver();
-        await streamTimestamps();
-    } catch (error) {
-        console.error("Error:", error);
+    latestOHLC = { open, high, low, close, timestamp };
+
+    // Store latest prices
+    closePrices.push(close);
+    highPrices.push(high);
+    lowPrices.push(low);
+
+    // Keep only necessary history
+    const maxPeriod = Math.max(SMA_PERIOD, ADX_PERIOD, RSI_PERIOD_14, MACD_SLOW, STOCHASTIC_PERIOD);
+    if (closePrices.length > maxPeriod) {
+        closePrices.shift();
+        highPrices.shift();
+        lowPrices.shift();
     }
-})();
 
-// Define a route to return the indicator values
-app.get('/indicators', (req, res) => {
-    res.json(indicatorValues);
+    // Calculate indicators
+    calculateIndicators();
+
+    console.log("✅ Updated OHLC and Indicators:", { latestOHLC, indicatorValues });
+    res.json({ latestOHLC, indicatorValues });
 });
 
+// Endpoint to get the latest OHLC and indicators
+app.get('/indicators', (req, res) => {
+    res.json({ latestOHLC, indicatorValues });
+});
+
+// Start the server
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
 });

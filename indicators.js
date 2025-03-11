@@ -1,6 +1,5 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
-const cors = require('cors');  // Add cors module
 const { SMA, ADX, Stochastic, RSI, MACD } = require('technicalindicators');
 
 const app = express();
@@ -21,12 +20,9 @@ let highPrices = [];
 let lowPrices = [];
 let indicatorValues = {};
 
-// Use CORS middleware to handle cross-origin requests
-app.use(cors());
-
 // Function to launch browser and navigate to PocketOption
 async function loadWebDriver() {
-    const browser = await puppeteer.launch({ headless: false }); // Set to true for headless mode
+    const browser = await puppeteer.launch({ headless: true }); // Set to true for headless mode
     const page = await browser.newPage();
     await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${BASE_URL}`);

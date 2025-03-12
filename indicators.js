@@ -1,6 +1,7 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
 const { SMA, ADX, Stochastic, RSI, MACD } = require('technicalindicators');
+const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = 3000;
@@ -19,6 +20,9 @@ let closePrices = [];
 let highPrices = [];
 let lowPrices = [];
 let indicatorValues = {};
+
+// Middleware to parse JSON bodies
+app.use(bodyParser.json());
 
 // Function to launch browser and navigate to PocketOption
 async function loadWebDriver() {
@@ -119,6 +123,23 @@ async function streamTimestamps() {
     }
 }
 
+// POST route to handle incoming data at '/indicators'
+app.post('/indicators', (req, res) => {
+    const ohlcData = req.body; // The data sent in the POST request
+    console.log('Received OHLC Data:', ohlcData);
+
+    // Process the received OHLC data (e.g., updating arrays for price data)
+    closePrices.push(ohlcData.close);
+    highPrices.push(ohlcData.high);
+    lowPrices.push(ohlcData.low);
+
+    // Calculate indicators with the newly received data
+    processTimestampsToOHLC([ohlcData.timestamp]);
+
+    // Send a response back to the client
+    res.status(200).json({ message: 'Data received successfully' });
+});
+
 // Main execution
 (async () => {
     try {
@@ -127,7 +148,7 @@ async function streamTimestamps() {
     } catch (error) {
         console.error("Error:", error);
     }
-})();
+});
 
 // Define a route to return the indicator values
 app.get('/indicators', (req, res) => {

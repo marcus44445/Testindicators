@@ -1,12 +1,30 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
+const mongoose = require('mongoose');
 const { SMA, ADX, Stochastic, RSI, MACD } = require('technicalindicators');
 const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = 3000;
-
 const BASE_URL = 'https://pocketoption.com/en/cabinet/demo-quick-high-low/';
+
+// MongoDB Connection
+mongoose.connect('mongodb://localhost:27017/trading_data', { useNewUrlParser: true, useUnifiedTopology: true })
+    .then(() => console.log('✅ Connected to MongoDB'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
+
+// Define OHLC Schema
+const ohlcSchema = new mongoose.Schema({
+    timestamp: Date,
+    open: Number,
+    high: Number,
+    low: Number,
+    close: Number,
+    indicators: Object
+});
+
+const OHLC = mongoose.model('OHLC', ohlcSchema);
+
 const SMA_PERIOD = 3;
 const ADX_PERIOD = 14;
 const RSI_PERIOD = 14;
@@ -19,47 +37,25 @@ const STOCHASTIC_SIGNAL = 3;
 let closePrices = [];
 let highPrices = [];
 let lowPrices = [];
-let indicatorValues = {};
 
 // Middleware to parse JSON bodies
 app.use(bodyParser.json());
 
 // Function to launch browser and navigate to PocketOption
 async function loadWebDriver() {
-    const browser = await puppeteer.launch({ headless: true }); // Set to true for headless mode
+    const browser = await puppeteer.launch({ headless: true });
     const page = await browser.newPage();
     await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
     console.log(`Navigated to ${BASE_URL}`);
     return { browser, page };
 }
 
-// Function to process timestamps into OHLC format
-function processTimestampsToOHLC(timestamps) {
-    const ohlcData = new Map();
+// Process OHLC and calculate indicators
+async function processOHLC(ohlcData) {
+    closePrices.push(ohlcData.close);
+    highPrices.push(ohlcData.high);
+    lowPrices.push(ohlcData.low);
 
-    timestamps.forEach((timestamp) => {
-        let interval = new Date(timestamp);
-        interval.setSeconds(Math.floor(interval.getSeconds() / 5) * 5, 0);
-
-        const key = interval.getTime();
-        if (!ohlcData.has(key)) {
-            ohlcData.set(key, { open: timestamp, high: timestamp, low: timestamp, close: timestamp });
-        } else {
-            let ohlc = ohlcData.get(key);
-            ohlc.high = timestamp > ohlc.high ? timestamp : ohlc.high;
-            ohlc.low = timestamp < ohlc.low ? timestamp : ohlc.low;
-            ohlc.close = timestamp;
-        }
-    });
-
-    // Add new OHLC values to persistent arrays
-    ohlcData.forEach(ohlc => {
-        closePrices.push(ohlc.close.getTime());
-        highPrices.push(ohlc.high.getTime());
-        lowPrices.push(ohlc.low.getTime());
-    });
-
-    // Keep only the latest required values
     const maxPeriod = Math.max(SMA_PERIOD, ADX_PERIOD, RSI_PERIOD, MACD_SLOW, STOCHASTIC_PERIOD);
     if (closePrices.length > maxPeriod) {
         closePrices = closePrices.slice(-maxPeriod);
@@ -67,94 +63,86 @@ function processTimestampsToOHLC(timestamps) {
         lowPrices = lowPrices.slice(-maxPeriod);
     }
 
-    // Calculate indicators when enough data is available
     if (closePrices.length >= maxPeriod) {
-        const smaValues = SMA.calculate({ period: SMA_PERIOD, values: closePrices });
-        const adxValues = ADX.calculate({ period: ADX_PERIOD, close: closePrices, high: highPrices, low: lowPrices });
-        const rsiValues = RSI.calculate({ period: RSI_PERIOD, values: closePrices });
-        const macdValues = MACD.calculate({
-            values: closePrices,
-            fastPeriod: MACD_FAST,
-            slowPeriod: MACD_SLOW,
-            signalPeriod: MACD_SIGNAL,
-            SimpleMAOscillator: false,
-            SimpleMASignal: false
-        });
-        const stochasticValues = Stochastic.calculate({
-            period: STOCHASTIC_PERIOD,
-            low: lowPrices,
-            high: highPrices,
-            close: closePrices,
-            signalPeriod: STOCHASTIC_SIGNAL
-        });
-
-        // Store indicator values in global variable
-        indicatorValues = {
-            SMA: smaValues,
-            ADX: adxValues.length ? adxValues[adxValues.length - 1] : "N/A",
-            RSI: rsiValues.length ? rsiValues[rsiValues.length - 1] : "N/A",
-            MACD: macdValues.length ? macdValues[macdValues.length - 1] : "N/A",
-            Stochastic: stochasticValues.length ? stochasticValues[stochasticValues.length - 1] : "N/A"
+        const indicators = {
+            SMA: SMA.calculate({ period: SMA_PERIOD, values: closePrices }),
+            ADX: ADX.calculate({ period: ADX_PERIOD, close: closePrices, high: highPrices, low: lowPrices }).slice(-1)[0] || "N/A",
+            RSI: RSI.calculate({ period: RSI_PERIOD, values: closePrices }).slice(-1)[0] || "N/A",
+            MACD: MACD.calculate({
+                values: closePrices,
+                fastPeriod: MACD_FAST,
+                slowPeriod: MACD_SLOW,
+                signalPeriod: MACD_SIGNAL,
+                SimpleMAOscillator: false,
+                SimpleMASignal: false
+            }).slice(-1)[0] || "N/A",
+            Stochastic: Stochastic.calculate({
+                period: STOCHASTIC_PERIOD,
+                low: lowPrices,
+                high: highPrices,
+                close: closePrices,
+                signalPeriod: STOCHASTIC_SIGNAL
+            }).slice(-1)[0] || "N/A"
         };
 
-        console.log("\nIndicators:", indicatorValues);
+        console.log("\n📊 Indicators:", indicators);
+
+        // Save to MongoDB
+        const newOHLC = new OHLC({
+            timestamp: new Date(),
+            open: ohlcData.open,
+            high: ohlcData.high,
+            low: ohlcData.low,
+            close: ohlcData.close,
+            indicators
+        });
+
+        await newOHLC.save();
     } else {
-        console.log("\nWaiting for more data to calculate indicators...");
+        console.log("\n⏳ Waiting for more data to calculate indicators...");
     }
 }
 
-// Function to stream timestamps and process them into OHLC
-async function streamTimestamps() {
-    const timestamps = [];
+// POST route to handle incoming data
+app.post('/indicators', async (req, res) => {
     try {
-        while (true) {
-            const currentTime = new Date();
-            timestamps.push(currentTime);
+        const ohlcData = req.body;
+        console.log('📥 Received OHLC Data:', ohlcData);
 
-            if (timestamps.length > 0 && currentTime.getSeconds() % 5 === 0) {
-                processTimestampsToOHLC(timestamps);
-                timestamps.length = 0;
-            }
+        await processOHLC(ohlcData);
 
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Sleep 1 second
+        res.status(200).json({ message: 'Data received and processed successfully' });
+    } catch (error) {
+        console.error('❌ Error processing OHLC data:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+// GET route to retrieve latest indicators
+app.get('/indicators', async (req, res) => {
+    try {
+        const latestOHLC = await OHLC.findOne().sort({ timestamp: -1 });
+
+        if (latestOHLC) {
+            res.json(latestOHLC.indicators);
+        } else {
+            res.status(404).json({ message: "No data available" });
         }
     } catch (error) {
-        console.error("Streaming stopped:", error);
+        console.error('❌ Error fetching indicators:', error);
+        res.status(500).json({ error: 'Internal Server Error' });
     }
-}
-
-// POST route to handle incoming data at '/indicators'
-app.post('/indicators', (req, res) => {
-    const ohlcData = req.body; // The data sent in the POST request
-    console.log('Received OHLC Data:', ohlcData);
-
-    // Process the received OHLC data (e.g., updating arrays for price data)
-    closePrices.push(ohlcData.close);
-    highPrices.push(ohlcData.high);
-    lowPrices.push(ohlcData.low);
-
-    // Calculate indicators with the newly received data
-    processTimestampsToOHLC([ohlcData.timestamp]);
-
-    // Send a response back to the client
-    res.status(200).json({ message: 'Data received successfully' });
 });
 
 // Main execution
 (async () => {
     try {
-        const { browser, page } = await loadWebDriver();
-        await streamTimestamps();
+        await loadWebDriver();
     } catch (error) {
-        console.error("Error:", error);
+        console.error("❌ Error:", error);
     }
 });
 
-// Define a route to return the indicator values
-app.get('/indicators', (req, res) => {
-    res.json(indicatorValues);
-});
-
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`🚀 Server is running on port ${PORT}`);
 });
